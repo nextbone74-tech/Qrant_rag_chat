@@ -30,20 +30,14 @@ else:
 
     q_client = init_qdrant(qdrant_url, qdrant_api_key)
 
-    # 컬렉션 자동 생성 (존재하지 않을 경우)
-    if not q_client.collection_exists(collection_name):
-        q_client.create_collection(
-            collection_name=collection_name,
-            vectors_config=q_client.get_fastembed_vector_params()
-        )
-
-    # 사이드바: 문서 학습 섹션
+    # 사이드바: 문서 데이터 추가 섹션
     st.sidebar.subheader("📄 문서 데이터 추가")
     user_document = st.sidebar.text_area("학습시킬 텍스트 내용을 입력하세요:", height=150)
     
     if st.sidebar.button("문서 벡터화 및 저장"):
         if user_document.strip():
             with st.spinner("문서를 벡터화하여 Qdrant Cloud에 저장하는 중..."):
+                # client.add는 컬렉션이 없을 경우 자동으로 생성합니다.
                 q_client.add(
                     collection_name=collection_name,
                     documents=[user_document],
