@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from google import genai
 from qdrant_client import QdrantClient
+from fastembed import TextEmbedding
 
 # 페이지 기본 설정
 st.set_page_config(page_title="Gemini + Qdrant RAG 챗봇", page_icon="🤖", layout="centered")
@@ -20,15 +21,18 @@ collection_name = "my_rag_documents"
 if not gemini_api_key or not qdrant_url or not qdrant_api_key:
     st.warning("⚠️ 사이드바에 GEMINI_API_KEY, QDRANT_URL, QDRANT_API_KEY를 모두 입력해주세요.")
 else:
-    # 1. Gemini 클라이언트 초기화 (최신 google-genai SDK)
+    # 1. Gemini 클라이언트 초기화
     client_genai = genai.Client(api_key=gemini_api_key)
 
-    # 2. Qdrant 클라이언트 초기화 (FastEmbed 내장)
+    # 2. Qdrant 클라이언트 및 임베딩 모델 초기화 (캐싱 처리)
     @st.cache_resource
-    def init_qdrant(url, api_key):
-        return QdrantClient(url=url, api_key=api_key)
+    def init_resources(url, api_key):
+        q_client = QdrantClient(url=url, api_key=api_key)
+        # client.add와 동일한 기본 임베딩 모델 로드
+        embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        return q_client, embed_model
 
-    q_client = init_qdrant(qdrant_url, qdrant_api_key)
+    q_client, embed_model = init_resources(qdrant_url, qdrant_api_key)
 
     # 사이드바: 문서 데이터 추가 섹션
     st.sidebar.subheader("📄 문서 데이터 추가")
@@ -37,7 +41,6 @@ else:
     if st.sidebar.button("문서 벡터화 및 저장"):
         if user_document.strip():
             with st.spinner("문서를 벡터화하여 Qdrant Cloud에 저장하는 중..."):
-                # client.add는 컬렉션이 없을 경우 자동으로 생성합니다.
                 q_client.add(
                     collection_name=collection_name,
                     documents=[user_document],
@@ -64,16 +67,26 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("Qdrant에서 관련 문서를 검색하고 Gemini가 답변을 생성하는 중..."):
                 try:
-                    # Qdrant에서 query_points 메서드로 검색 수행
+                    # 사용자 질문을 벡터로 변환 (FastEmbed 활용)
+                    query_vector = list(embed_model.embed([prompt]))[0].tolist()
+
+                    # Qdrant에서 벡터 기반 검색 수행
                     response_points = q_client.query_points(
                         collection_name=collection_name,
-                        query=prompt,
+                        query=query_vector,
                         limit=3
                     )
 
                     # 검색 결과 문서 추출
                     search_results = response_points.points
-                    context_text = "\n\n".join([hit.document for hit in search_results if hasattr(hit, 'document') and hit.document]) if search_results else "관련된 문서를 찾지 못했습니다."
+                    context_text = "\n\n".join([hit.payload.get("document", "") for hit in search_results if hit.payload and "document" in hit.payload]) if search_results else ""
+                    
+                    # 만약 payload 형태가 아니라면 일반 text 속성 체크
+                    if not context_text and search_results:
+                        context_text = "\n\n".join([hit.document for hit in search_results if hasattr(hit, 'document') and hit.document]) if search_results else "관련된 문서를 찾지 못했습니다."
+
+                    if not context_text.strip():
+                        context_text = "관련된 문서를 찾지 못했습니다."
 
                     # Gemini 프롬프트 작성
                     full_prompt = f"""다음 참고 문서 내용을 바탕으로 사용자의 질문에 정확하게 답변해 주세요. 문서에 없는 내용은 모른다고 답하세요.
