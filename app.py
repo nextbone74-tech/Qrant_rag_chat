@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from google import genai
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from fastembed import TextEmbedding
 
 # 페이지 기본 설정
@@ -24,15 +25,27 @@ else:
     # 1. Gemini 클라이언트 초기화
     client_genai = genai.Client(api_key=gemini_api_key)
 
-    # 2. Qdrant 클라이언트 및 임베딩 모델 초기화 (캐싱 처리)
+    # 2. Qdrant 클라이언트 및 임베딩 모델 초기화 (컬렉션 자동 생성 포함)
     @st.cache_resource
     def init_resources(url, api_key):
         q_client = QdrantClient(url=url, api_key=api_key)
-        # client.add와 동일한 기본 임베딩 모델 로드
         embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        
+        # 컬렉션이 없으면 자동으로 생성 (404 에러 방지)
+        if not q_client.collection_exists(collection_name):
+            q_client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(
+                    size=384,  # bge-small-en-v1.5 모델의 벡터 차원 수
+                    distance=models.Distance.COSINE
+                )
+            )
         return q_client, embed_model
 
-    q_client, embed_model = init_resources(qdrant_url, qdrant_api_key)
+    try:
+        q_client, embed_model = init_resources(qdrant_url, qdrant_api_key)
+    except Exception as e:
+        st.error(f"Qdrant 연결 오류: {e}")
 
     # 사이드바: 문서 데이터 추가 섹션
     st.sidebar.subheader("📄 문서 데이터 추가")
@@ -67,7 +80,7 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("Qdrant에서 관련 문서를 검색하고 Gemini가 답변을 생성하는 중..."):
                 try:
-                    # 사용자 질문을 벡터로 변환 (FastEmbed 활용)
+                    # 사용자 질문을 벡터로 변환
                     query_vector = list(embed_model.embed([prompt]))[0].tolist()
 
                     # Qdrant에서 벡터 기반 검색 수행
@@ -77,11 +90,9 @@ else:
                         limit=3
                     )
 
-                    # 검색 결과 문서 추출
                     search_results = response_points.points
                     context_text = "\n\n".join([hit.payload.get("document", "") for hit in search_results if hit.payload and "document" in hit.payload]) if search_results else ""
                     
-                    # 만약 payload 형태가 아니라면 일반 text 속성 체크
                     if not context_text and search_results:
                         context_text = "\n\n".join([hit.document for hit in search_results if hasattr(hit, 'document') and hit.document]) if search_results else "관련된 문서를 찾지 못했습니다."
 
