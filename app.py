@@ -1,0 +1,103 @@
+import os
+import streamlit as st
+from google import genai
+from qdrant_client import QdrantClient
+
+# 페이지 기본 설정
+st.set_page_config(page_title="Gemini + Qdrant RAG 챗봇", page_icon="🤖", layout="centered")
+
+st.title("📚 내 문서 기반 Qdrant & Gemini RAG 챗봇")
+st.markdown("Qdrant Cloud와 Gemini API를 연동하여, 업로드한 문서를 기반으로 정확하고 신뢰할 수 있는 답변을 제공하는 챗봇입니다.")
+
+# 사이드바 설정 (API 키 입력)
+st.sidebar.header("🔑 API 및 클라우드 설정")
+gemini_api_key = st.sidebar.text_input("GEMINI_API_KEY", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
+qdrant_url = st.sidebar.text_input("QDRANT_URL", value=os.environ.get("QDRANT_URL", ""))
+qdrant_api_key = st.sidebar.text_input("QDRANT_API_KEY", type="password", value=os.environ.get("QDRANT_API_KEY", ""))
+
+collection_name = "my_rag_documents"
+
+if not gemini_api_key or not qdrant_url or not qdrant_api_key:
+    st.warning("⚠️ 사이드바에 GEMINI_API_KEY, QDRANT_URL, QDRANT_API_KEY를 모두 입력해주세요.")
+else:
+    # 1. Gemini 클라이언트 초기화 (최신 google-genai SDK)
+    client_genai = genai.Client(api_key=gemini_api_key)
+
+    # 2. Qdrant 클라이언트 초기화 (FastEmbed 내장)
+    @st.cache_resource
+    def init_qdrant(url, api_key):
+        return QdrantClient(url=url, api_key=api_key)
+
+    q_client = init_qdrant(qdrant_url, qdrant_api_key)
+
+    # 컬렉션 자동 생성 (존재하지 않을 경우)
+    if not q_client.collection_exists(collection_name):
+        q_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=q_client.get_fastembed_vector_params()
+        )
+
+    # 사이드바: 문서 학습 섹션
+    st.sidebar.subheader("📄 문서 데이터 추가")
+    user_document = st.sidebar.text_area("학습시킬 텍스트 내용을 입력하세요:", height=150)
+    
+    if st.sidebar.button("문서 벡터화 및 저장"):
+        if user_document.strip():
+            with st.spinner("문서를 벡터화하여 Qdrant Cloud에 저장하는 중..."):
+                q_client.add(
+                    collection_name=collection_name,
+                    documents=[user_document],
+                    metadata=[{"source": "streamlit_input"}]
+                )
+            st.sidebar.success("✅ 문서가 Qdrant에 성공적으로 저장되었습니다!")
+        else:
+            st.sidebar.error("저장할 텍스트를 입력해주세요.")
+
+    # 3. 챗봇 대화 화면 구성
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # 사용자 입력 처리
+    if prompt := st.chat_input("문서 내용에 대해 무엇이든 물어보세요!"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Qdrant에서 관련 문서를 검색하고 Gemini가 답변을 생성하는 중..."):
+                try:
+                    # Qdrant에서 유사 문서 검색 (FastEmbed 쿼리 자동 변환)
+                    search_results = q_client.query(
+                        collection_name=collection_name,
+                        query_text=prompt,
+                        limit=3
+                    )
+
+                    context_text = "\n\n".join([hit.document for hit in search_results]) if search_results else "관련된 문서를 찾지 못했습니다."
+
+                    # Gemini 프롬프트 작성
+                    full_prompt = f"""다음 참고 문서 내용을 바탕으로 사용자의 질문에 정확하게 답변해 주세요. 문서에 없는 내용은 모른다고 답하세요.
+
+[참고 문서]
+{context_text}
+
+[사용자 질문]
+{prompt}
+"""
+
+                    # Gemini API 호출 (최신 SDK interactions.create 사용)
+                    response = client_genai.interactions.create(
+                        model="gemini-2.5-flash",
+                        input=full_prompt
+                    )
+                    answer = response.output_text
+
+                    st.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    error_message = f"오류가 발생했습니다: {e}"
+                    st.error(error_message)
