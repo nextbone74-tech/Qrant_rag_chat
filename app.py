@@ -64,14 +64,16 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("Qdrant에서 관련 문서를 검색하고 Gemini가 답변을 생성하는 중..."):
                 try:
-                    # Qdrant에서 유사 문서 검색 (FastEmbed 쿼리 자동 변환)
-                    search_results = q_client.query(
+                    # Qdrant에서 query_points 메서드로 검색 수행
+                    response_points = q_client.query_points(
                         collection_name=collection_name,
-                        query_text=prompt,
+                        query=prompt,
                         limit=3
                     )
 
-                    context_text = "\n\n".join([hit.document for hit in search_results]) if search_results else "관련된 문서를 찾지 못했습니다."
+                    # 검색 결과 문서 추출
+                    search_results = response_points.points
+                    context_text = "\n\n".join([hit.document for hit in search_results if hasattr(hit, 'document') and hit.document]) if search_results else "관련된 문서를 찾지 못했습니다."
 
                     # Gemini 프롬프트 작성
                     full_prompt = f"""다음 참고 문서 내용을 바탕으로 사용자의 질문에 정확하게 답변해 주세요. 문서에 없는 내용은 모른다고 답하세요.
@@ -83,7 +85,7 @@ else:
 {prompt}
 """
 
-                    # Gemini API 호출 (최신 SDK interactions.create 사용)
+                    # Gemini API 호출
                     response = client_genai.interactions.create(
                         model="gemini-2.5-flash",
                         input=full_prompt
