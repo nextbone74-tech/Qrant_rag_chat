@@ -111,7 +111,7 @@ else:
 
                     # Gemini API 호출
                     response = client_genai.interactions.create(
-                        model="gemini-3-flash",
+                        model="Gemini-3.5-Flash-Lite",
                         input=full_prompt
                     )
                     answer = response.output_text
